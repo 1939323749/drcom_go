@@ -3,14 +3,21 @@ package conf
 import (
 	"flag"
 	"os"
-
-	"github.com/BurntSushi/toml"
 )
 
 // Conf global variable.
 var (
 	Conf     *Config
 	confPath string
+
+	version    = flag.String("version", "1.0", "version")
+	authServer = flag.String("auth_server", "10.100.61.3", "auth server")
+	port       = flag.String("port", "61440", "port")
+	username   = flag.String("username", "USERNAME", "username")
+	password   = flag.String("password", "PASSWORD", "password")
+	hostname   string
+	mac        = flag.String("mac", "00:00:00:00:00:00", "MAC address")
+	ip         = flag.String("ip", "0.0.0.0", "IP address")
 )
 
 type Config struct {
@@ -30,14 +37,19 @@ func init() {
 
 // Init create config instance.
 func Init() (err error) {
-	if confPath == "" {
-		confPath = "drcom-config-example.toml"
+	Conf = &Config{
+		Version:    *version,
+		AuthServer: *authServer,
+		Port:       *port,
+		Username:   *username,
+		Password:   *password,
+		MAC:        *mac,
+		IP:         *ip,
 	}
-	if _, err = toml.DecodeFile(confPath, &Conf); err != nil {
-		return
+
+	if hostname, err = os.Hostname(); err != nil {
+		hostname = "unknown"
 	}
-	if Conf.Hostname, err = os.Hostname(); err != nil {
-		Conf.Hostname = "unknown"
-	}
+	Conf.Hostname = hostname
 	return
 }

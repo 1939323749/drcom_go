@@ -9,7 +9,7 @@ import (
 	"net"
 	"time"
 
-	"go-jlu-drcom-client/conf"
+	"github.com/1939323749/drcom_go/conf"
 )
 
 const (
