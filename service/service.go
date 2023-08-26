@@ -12,6 +12,8 @@ import (
 	"github.com/1939323749/drcom_go/conf"
 )
 
+const RETRYTIMES = 5
+
 const (
 	_codeIn       = byte(0x03)
 	_codeOut      = byte(0x06)
@@ -46,6 +48,12 @@ type Service struct {
 	ChallengeTimes int
 	Count          int
 	logoutCh       chan struct{}
+}
+
+// Error exit message
+type Error struct {
+	Err error
+	Msg string
 }
 
 // New create service instance and return.
@@ -91,13 +99,18 @@ func (s *Service) Start() {
 		log.Printf("drcomSvc.Login() error(%v)", err)
 		return
 	}
-	log.Println("ok")
 	log.Println("alive daemon start ...")
 	go s.aliveproc()
-	log.Println("ok")
+	log.Println("alive daemon started")
+
 	log.Println("logout daemon start ...")
 	go s.logoutproc()
-	log.Println("ok")
+	log.Println("logout daemon started")
+
+	log.Println("connect daemon start ...")
+	go s.checkConnect()
+	log.Println("connect daemon started")
+
 }
 
 func (s *Service) aliveproc() {
@@ -140,9 +153,28 @@ func (s *Service) logoutproc() {
 	}
 }
 
+func (s *Service) checkConnect() {
+	retriedTimes := 0
+	for {
+		if ok, err := s.checkConnectivity(); !ok {
+			time.Sleep(3 * time.Second)
+			log.Println("Disconnected:", err)
+			log.Println("Retrying: ", retriedTimes+1)
+			retriedTimes++
+		}
+		if retriedTimes == RETRYTIMES {
+			close(s.logoutCh)
+			panic(Error{Err: fmt.Errorf("disconnected"), Msg: fmt.Sprintf("disconnected")})
+		}
+	}
+}
+
 // Close close service.
 func (s *Service) Close() error {
 	close(s.logoutCh)
-	s.conn.Close()
+	err := s.conn.Close()
+	if err != nil {
+		return err
+	}
 	return nil
 }
