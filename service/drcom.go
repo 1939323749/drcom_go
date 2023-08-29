@@ -2,9 +2,11 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"errors"
-	"log"
+	"fmt"
 	"math/rand"
+	"time"
 )
 
 var (
@@ -15,31 +17,52 @@ var (
 )
 
 func (s *Service) Challenge(tryTimes int) (err error) {
-	var (
-		r   []byte
-		buf = []byte{0x01, (byte)(0x02 + tryTimes),
-			byte(rand.Int()), byte(rand.Int()), 0x6a,
-			0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00, 0x00}
-		conn = s.conn
-	)
-	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ok := make(chan struct{})
+
+	go func() {
+		defer close(ok)
+
+		var (
+			r   []byte
+			buf = []byte{0x01, (byte)(0x02 + tryTimes),
+				byte(rand.Int()), byte(rand.Int()), 0x6a,
+				0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00}
+			conn = s.conn
+		)
+
+		if _, err = conn.Write(buf); err != nil {
+			s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
+			return
+		}
+
+		r = make([]byte, 76)
+		if _, err = conn.Read(r); err != nil {
+			s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
+			return
+		}
+
+		if r[0] == 0x02 {
+			copy(s.salt, r[4:8])
+			copy(s.clientIP, r[20:24])
+			return
+		}
+
+		err = ErrChallengeHeadError
+	}()
+
+	select {
+	case <-ok:
+		return
+	case <-ctx.Done():
+		s.logger.Error("Challenge timeout")
+		err = ctx.Err()
 		return
 	}
-	r = make([]byte, 76)
-	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
-		return
-	}
-	if r[0] == 0x02 {
-		copy(s.salt, r[4:8])
-		copy(s.clientIP, r[20:24])
-		return
-	}
-	err = ErrChallengeHeadError
-	return
 }
 
 func (s *Service) Login() (err error) {
@@ -49,16 +72,16 @@ func (s *Service) Login() (err error) {
 		conn = s.conn
 	)
 	if buf, err = s.bufIn(); err != nil {
-		log.Printf("service.bufIn() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("service.bufIn() error(%v)", err))
 		return
 	}
 	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+		s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 		return
 	}
 	r = make([]byte, 128)
 	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 		return
 	}
 	if r[0] != 0x04 {
@@ -97,7 +120,7 @@ func (s *Service) bufIn() (buf []byte, err error) {
 	buf = append(buf, _controlCheck, _adapterNum) //[56:58]
 	// md5a xor mac
 	if mac, err = MACHex2Bytes(s.c.MAC); err != nil {
-		log.Printf("MACHex2Bytes(%s) error(%v)", s.c.MAC, err)
+		s.logger.Error(fmt.Sprintf("MACHex2Bytes(%s) error(%v)", s.c.MAC, err))
 		return
 	}
 	for i := 0; i < 6; i++ {
@@ -181,12 +204,12 @@ func (s *Service) Alive() (err error) {
 	)
 	buf = s.buf38()
 	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+		s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 		return
 	}
 	r = make([]byte, 128)
 	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 		return
 	}
 	s.keepAliveVer[0] = r[28]
@@ -194,12 +217,12 @@ func (s *Service) Alive() (err error) {
 	if s.extra() {
 		buf = s.buf40(true, true)
 		if _, err = conn.Write(buf); err != nil {
-			log.Printf("conn.Write(%v) error(%v)", buf, err)
+			s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 			return
 		}
 		r = make([]byte, 512)
 		if _, err = conn.Read(r); err != nil {
-			log.Printf("conn.Read() error(%v)", err)
+			s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 			return
 		}
 		s.Count++
@@ -207,12 +230,12 @@ func (s *Service) Alive() (err error) {
 	// 40_1
 	buf = s.buf40(true, false)
 	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+		s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 		return
 	}
 	r = make([]byte, 64)
 	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 		return
 	}
 	s.Count++
@@ -220,11 +243,11 @@ func (s *Service) Alive() (err error) {
 	// 40_2
 	buf = s.buf40(false, false)
 	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+		s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 		return
 	}
 	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 	}
 	s.Count++
 	return
@@ -288,16 +311,16 @@ func (s *Service) Logout() (err error) {
 		conn   = s.conn
 	)
 	if buf, err = s.bufOut(); err != nil {
-		log.Printf("service.bufOut() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("service.bufOut() error(%v)", err))
 		return
 	}
 	if _, err = conn.Write(buf); err != nil {
-		log.Printf("conn.Write(%v) error(%v)", buf, err)
+		s.logger.Error(fmt.Sprintf("conn.Write(%v) error(%v)", buf, err))
 		return
 	}
 	r = make([]byte, 512)
 	if _, err = conn.Read(r); err != nil {
-		log.Printf("conn.Read() error(%v)", err)
+		s.logger.Error(fmt.Sprintf("conn.Read() error(%v)", err))
 		return
 	}
 	if r[0] != 0x04 {
@@ -321,7 +344,7 @@ func (s *Service) bufOut() (buf []byte, err error) {
 	buf = append(buf, _controlCheck, _adapterNum)
 	// md5 xor mac
 	if mac, err = MACHex2Bytes(s.c.MAC); err != nil {
-		log.Printf("MACHex2Bytes(%s) error(%v)", s.c.MAC, err)
+		s.logger.Error(fmt.Sprintf("MACHex2Bytes(%s) error(%v)", s.c.MAC, err))
 		buf = nil
 		return
 	}

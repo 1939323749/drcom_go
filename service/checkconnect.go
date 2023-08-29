@@ -7,7 +7,7 @@ import (
 
 func (s *Service) checkConnectivity() (bool, error) {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", "https://ip.jlu.edu.cn", nil)
+	req, err := http.NewRequest("GET", "http://4.ipw.cn", nil)
 	if err != nil {
 		return false, err
 	}
@@ -18,7 +18,7 @@ func (s *Service) checkConnectivity() (bool, error) {
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {
-			close(s.logoutCh)
+			s.logger.Error(err.Error())
 		}
 	}(resp.Body)
 

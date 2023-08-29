@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"os"
 	"time"
 
 	"github.com/1939323749/drcom_go/conf"
@@ -47,7 +48,10 @@ type Service struct {
 	conn           *net.UDPConn
 	ChallengeTimes int
 	Count          int
-	logoutCh       chan struct{}
+	LogoutCh       chan struct{}
+
+	logger  Logger
+	Restart chan int
 }
 
 // Error exit message
@@ -69,7 +73,14 @@ func New(c *conf.Config) (s *Service) {
 		salt:           make([]byte, 4),
 		ChallengeTimes: 0,
 		Count:          0,
-		logoutCh:       make(chan struct{}, 1),
+		LogoutCh:       make(chan struct{}, 1),
+		logger: Logger{
+			loggers: map[string]*log.Logger{
+				"info":  log.New(os.Stdout, "[INFO]", log.LstdFlags),
+				"error": log.New(os.Stderr, "[ERROR]", log.LstdFlags),
+			},
+		},
+		Restart: make(chan int, 1),
 	}
 	var (
 		err     error
@@ -84,94 +95,108 @@ func New(c *conf.Config) (s *Service) {
 	return
 }
 
+func (s *Service) ReStart() error {
+	err := s.Start()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // Start start drcom client.
-func (s *Service) Start() {
-	log.Println("start ...")
-	log.Println("challenge ...")
+func (s *Service) Start() error {
+	s.logger.Info("start ...")
+	s.logger.Info("challenge ...")
 	if err := s.Challenge(s.ChallengeTimes); err != nil {
-		log.Printf("drcomSvc.Challenge(%d) error(%v)", s.ChallengeTimes, err)
-		return
+		s.logger.Error(fmt.Sprintf("drcomSvc.Challenge(%d) error(%v)", s.ChallengeTimes, err))
+		return err
 	}
 	s.ChallengeTimes++
-	log.Println("ok")
-	log.Println("login ...")
+	s.logger.Info("ok")
+	s.logger.Info("login ...")
 	if err := s.Login(); err != nil {
-		log.Printf("drcomSvc.Login() error(%v)", err)
-		return
+		s.logger.Error(fmt.Sprintf("drcomSvc.Login() error(%v)", err))
+		return err
 	}
-	log.Println("alive daemon start ...")
+	s.logger.Info("alive daemon start ...")
 	go s.aliveproc()
-	log.Println("alive daemon started")
+	s.logger.Info("alive daemon started")
 
-	log.Println("logout daemon start ...")
+	s.logger.Info("logout daemon start ...")
 	go s.logoutproc()
-	log.Println("logout daemon started")
+	s.logger.Info("logout daemon started")
 
-	log.Println("connect daemon start ...")
+	s.logger.Info("connect daemon start ...")
 	go s.checkConnect()
-	log.Println("connect daemon started")
-
+	s.logger.Info("connect daemon started")
+	return nil
 }
 
 func (s *Service) aliveproc() {
 	count := 0
 	for {
 		select {
-		case _, ok := <-s.logoutCh:
+		case _, ok := <-s.LogoutCh:
 			if !ok {
-				log.Println("keep-aliveproc goroutine get a logout signal, exit")
+				s.logger.Info("keep-aliveproc goroutine get a logout signal, exit")
 				return
 			}
 		default:
 		}
 		count++
-		log.Printf("keep-aliveproc ... %d", count)
+		s.logger.Info(fmt.Sprintf("keep-aliveproc ... %d", count))
 		if err := s.Alive(); err != nil {
-			log.Printf("drcomSvc.Alive() error(%v)", err)
+			s.logger.Error(fmt.Sprintf("drcomSvc.Alive() error(%v)", err))
 			time.Sleep(time.Second * 5)
 			continue
 		}
-		log.Println("ok")
+		s.logger.Info("ok")
 		time.Sleep(time.Second * 20)
 	}
-	return
 }
 
 func (s *Service) logoutproc() {
-	if _, ok := <-s.logoutCh; !ok {
-		log.Println("logout ...")
+	if _, ok := <-s.LogoutCh; !ok {
+		s.logger.Info("logout ...")
 		if err := s.Challenge(s.ChallengeTimes); err != nil {
-			log.Printf("drcomSvc.Challenge(%d) error(%v)", s.ChallengeTimes, err)
+			s.logger.Error(fmt.Sprintf("drcomSvc.Challenge(%d) error(%v)", s.ChallengeTimes, err))
 			return
 		}
 		s.ChallengeTimes++
 		if err := s.Logout(); err != nil {
-			log.Printf("service.Logout() error(%v)", err)
+			s.logger.Error(fmt.Sprintf("service.Logout() error(%v)", err))
 			return
 		}
-		log.Println("ok")
+		s.logger.Info("ok")
 	}
 }
 
 func (s *Service) checkConnect() {
 	retriedTimes := 0
 	for {
-		if ok, err := s.checkConnectivity(); !ok {
-			time.Sleep(3 * time.Second)
-			log.Println("Disconnected:", err)
-			log.Println("Retrying: ", retriedTimes+1)
-			retriedTimes++
-		}
-		if retriedTimes == RETRYTIMES {
-			close(s.logoutCh)
-			panic(Error{Err: fmt.Errorf("disconnected"), Msg: fmt.Sprintf("disconnected")})
+		time.Sleep(2 * time.Second)
+		go func() {
+			ok, err := s.checkConnectivity()
+			if !ok {
+				retriedTimes++
+				s.logger.Error(fmt.Sprintf("connectivity check failed, retry %d times, %s", retriedTimes, err))
+			}
+			return
+		}()
+		if retriedTimes >= RETRYTIMES {
+			err := s.Close()
+			if err != nil {
+				return
+			}
+			s.logger.Error("connectivity check failed, logout")
+			return
 		}
 	}
 }
 
 // Close close service.
 func (s *Service) Close() error {
-	close(s.logoutCh)
+	close(s.LogoutCh)
 	err := s.conn.Close()
 	if err != nil {
 		return err
